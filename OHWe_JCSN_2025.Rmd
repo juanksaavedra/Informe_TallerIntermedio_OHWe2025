@@ -5,8 +5,18 @@ date: "`r Sys.Date()`"
 format:
   html:
     css: styles.css
+  pdf:
+    documentclass: article
+    keep-tex: true
+    toc: true
 editor: visual
 ---
+
+```{r, include=FALSE}
+# install.packages("tinytex")
+# tinytex::install_tinytex()
+```
+
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.align = "center")
