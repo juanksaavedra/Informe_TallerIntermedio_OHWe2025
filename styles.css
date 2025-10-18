@@ -1,0 +1,15 @@
+css
+/* Justificar texto de todos los párrafos en el cuerpo del documento */
+body, p {
+  text-align: justify;
+}
+
+/* Justificar contenido dentro de bloques de celdas de Quarto */
+.cell-output-display, .cell-output, .cell-output-stdout, .cell-output-stderr {
+  text-align: justify;
+}
+
+body, p, li {
+  text-align: justify;
+}
+

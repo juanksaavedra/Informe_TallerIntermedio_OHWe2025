@@ -1,30 +1,232 @@
 ---
 title: "Evaluación Taller Intermedio OHWe 2025"
-author: "Profesor: Dr. Juan Carlos Saavedra-Nievas"
-date: "2025-10-14"
-output: html_document
+author: "Dr. Juan Carlos Saavedra-Nievas"
+date: "`r Sys.Date()`"
+format:
+  html:
+    css: styles.css
+editor: visual
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.align = "center")
+
+# Instala libraría pacman (gestiona paquetes) de no estar instalada
+if(!require(pacman,warn.conflicts=FALSE)) install.packages("pacman")
+
+# Desde CRAN
+pacman::p_load(ncdf4, devtools, raster, tidyverse, kableExtra, smooth, sf, maps)
+
+# Desde GitHub
+pacman::p_load_gh("hvillalo/satin", force = TRUE)
+
+# Funciones
+source('./Funciones/Funciones.R', encoding = 'UTF-8')
+
 ```
 
-## R Markdown
+![](OHWe.png){fig-align="left" width="156"}
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+## Fuente de datos
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+Para ilustrar la manipulación de datos temporales y espaciales se utilizará la información proveniente del producto *Global Ocean Physics Analysis and Forecast.*
 
-```{r cars}
-summary(cars)
+<https://data.marine.copernicus.eu/es/product/GLOBAL_ANALYSISFORECAST_PHY_001_024/>
+
+De Copernicus (<https://marine.copernicus.eu/>).
+
+![**Figura 1**. Obtención de datos desde Copernicus](DataCopernicus.png){fig-align="center" width="650"}
+
+El archivo netCDF contiene datos mensuales de la temperatura potencial del mar para la zona de la Isla Grande de Chiloe, Chile (**Figura 1**). El periodo abarca desde junio del 2022 a septiembre de 2025, en profundidades entre los 500 metros y la superficie del mar (a medio metro).
+
+## Importación a `RStudio`
+
+### Importacion con las librerias **`ncdf4`** y **`satin`**
+
+La importación de datos puede ser realizada con la función `nc_open()` el paquete **`ncdf4`** o con la función `read.cmems()` del paquete **`satin`** disponible en la cuenta de GitHub ***hvillalo***.
+
+```{r}
+dat_temp1 <- nc_open("./Datos/cmems_mod_glo_phy-thetao_anfc_0.083deg_P1M-m_1760545237347.nc")
+dat_temp2 <- read.cmems("./Datos/cmems_mod_glo_phy-thetao_anfc_0.083deg_P1M-m_1760545237347.nc")
 ```
 
-## Including Plots
+La información global del archivo netCDF, importado con la función `read.cmems()`, se presenta a continuación:
 
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+print.satin_mod(dat_temp2)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+Podemos ver que tenemos datos mensuales de temperatura en °C, con una resolución espacial de 9.3 km. En total son 40 meses (jun-2022 a sep-2025) y 32 niveles de profundidad diferentes (entre 0.5 y 541 metros).
+
+Para generar una tabla con los datos de posición, temporales y de profundidad utilizamos el objeto `dat.temp2` clase **`satin`** mediante la función `formatXTP` modificada para obtener todas las capas temporales y de profundidad.
+
+```{r}
+sst_stn <- extractPts(X = dat_temp2, points = expand.grid(x=dat_temp2@lon, y=dat_temp2@lat))
+dt_stn <- formatXTP(sst_stn)
+
+```
+
+La vista de los 10 primeros registros de datos importados se presenta en la siguiente tabla.
+
+```{r, echo=FALSE}
+kable(head(dt_stn), caption = "**Tabla 1.** Vista primeros 10 registros de datos importados (n= 967.680)")
+```
+
+El resumen del total de capas y posiciones se presenta en la siguiente tabla.
+
+```{r, echo=FALSE}
+kable(dt_stn %>% 
+  reframe(across(c(Time, Depth, x, y), ~ n_distinct(.x), .names ="{.col}_{'n'}"),
+          min = min(sst, na.rm = TRUE),
+          max = max(sst, na.rm = TRUE),
+          mean = mean(sst, na.rm = TRUE),
+          median = median(sst, na.rm = TRUE),
+          q25 = unname(quantile(sst, prob=0.25, na.rm=TRUE)),
+          q75 = unname(quantile(sst, prob=0.75, na.rm=TRUE)),
+          sd = sd(sst, na.rm = TRUE),
+          riq = q75 - q25),
+      caption = "**Tabla 2.** Resumen datos importados")
+```
+
+### Importación con la librería **`raster`**
+
+Otra formato de importación es utilizar la función `brick()` de la librería **`raster`**, que importa los archivos `netCDF` en formato `rasterbrick`. El inconveniente es que si aparte del tiempo existe otra dimensión (profundidad), solo es posible importar un nivel de esa capa.
+
+Para solucionar esto, se generó la función `brick_mod` que permite:
+
+1.  Importar todas todas las capas temporales para una capa particular de profundidad con los argumentos, `dt.time = TRUE, dt.depth = FALSE, level = 1`, `level` indica el número de la capa asociada a la profundidad.
+    -   Para este caso se genera una lista con los objetos *"*`brick.tmp`*"* y *"*`dt.tmp`*"*, el primer objeto contiene el **RasterBrick** para la capa de profundidad elegida (por defecto la primera) y el segundo es una tabla con los datos temporales, la capa de profundidad elegida, las posiciones y la variable de interés.
+2.  Importar todas todas las capas de profundidad para una capa particular temporal con los argumentos, `dt.time = FALSE, dt.depth = TRUE, level = 1`, `level` indica el número de la capa asociada a la temporalidad.
+    -   Para este caso se genera una lista con los objetos *"*`brick.dpht`*"* y *"*`dt.dpht`*"*, el primer objeto contiene el **RasterBrick** para cada capa de temporalidad elegida (por defecto la primera) y el segundo es una tabla con los datos de profundidad, la capa temporal elegida, las posiciones y la variable de interés.
+3.  Importar todas todas las capas temporales y de profundidad con los argumentos, `dt.time = TRUE, dt.depth = TRUE`, el argumento `level` no es utilizado.
+    -   Para este caso se genera una lista con los objetos *"*`brick.tmp`*"* y *"*`dt.td`*"*, el primer objeto contiene los **RasterBrick** para cada capa de profundidad y el segundo es una tabla con los datos temporales, la profundidad, las posiciones y la variable de interés.
+
+```{r}
+path_sst <- "./Datos/cmems_mod_glo_phy-thetao_anfc_0.083deg_P1M-m_1760545237347.nc"
+sst_tmp <- brick_mod(path_sst, dt.time = TRUE, dt.depth = FALSE, level = 3)
+sst_dph <- brick_mod(path_sst, dt.time = FALSE, dt.depth = TRUE, level = 4)
+sst_tmdp <- brick_mod(path_sst, dt.time = TRUE, dt.depth = TRUE)
+```
+
+Los objetos generados en la importación de `sst_tmdp` son el objeto `brick.tmp` que contiene los atributos de la clase **RasterBrick** y `dt.td` con la tabla de datos temporales, espaciales (`lat`, `lon` y `depth`) y la variable de interés.
+
+```{r}
+names(sst_tmdp)
+```
+
+Para este caso se tienen tantos objetos **RasterBrick** como profundidades se tengan:
+
+```{r}
+round(as.numeric(names(sst_tmdp$brick.tmp)),1)
+```
+
+Por ultimo la resolución espacial de los datos importados con la función `brick_mod()` es `r round(res(sst_tmdp$brick.tmp[[1]])[1] * 111.7, 1)` km y el resumen del total de capas y posiciones se presenta en la siguiente tabla.
+
+```{r, echo=FALSE}
+kable(res.rb(sst_tmdp),
+      caption = "**Tabla 3**. Resumen datos importados")
+```
+
+## Gráfica temporal datos importados desde la librería **`raster`**
+
+Construcción de tabla de datos considerando intervalos de profundidad de aproximadamente 100 metros.
+
+```{r}
+tbl_catp <- sst_tmdp$dt.td %>% 
+  mutate(Cat_Depth = cut_interval(Depth, 5)) %>% 
+  group_by(Time, Cat_Depth) %>% 
+  reframe(
+    n = n(),
+    n_miss = sum(is.na(sst)),
+    p_complete = 1-(n_miss/n),
+    sst=mean(sst, na.rm = TRUE)) %>% 
+  mutate(sst_mm = c(cma(sst, order = 12)$fitted))
+```
+
+La vista de los 10 primeros registros de la tabla agrupada por `Time` y `Cat_Depth` se presenta en la siguiente tabla.
+
+```{r, echo=FALSE}
+kable(head(tbl_catp), caption = "**Tabla 4.** Vista primeros 10 registros de datos importados (n= 200)")
+```
+
+La **Figura 2** presenta la variación promedio de la temperatura mensual entre junio de 2022 y septiembre de 2025, considerando intervalos de profundidad de aproximadamente 100 metros. Se observa un patrón térmico consistente con la estratificación vertical típica de ambientes marinos, donde la temperatura disminuye progresivamente con la profundidad. Las variaciones temporales sugieren fluctuaciones estacionales y posibles eventos de mezcla o intrusiones de masas de agua más frías en determinados periodos.
+
+```{r}
+#| echo: false
+#| fig-align: center
+#| fig-width: 10
+#| fig-height: 6
+#| fig-cap: "**Figura 2.** Evolución temporal de la temperatura media para el área de estudio por mes y categoría de profundidad"
+
+
+tbl_catp %>%
+  ggplot(aes(x=Time, y=sst, color=Cat_Depth)) +
+  geom_point(aes(size=p_complete*100)) +
+  geom_line() +
+  labs(x = NULL, y='Temperatura °C', color = "Categoría\nProfundidad") +
+  scale_x_date(date_labels = "%b-%Y", date_breaks = "2 month") +
+  scale_size_continuous(name = "Porcentaje completitud", labels = scales::label_percent(scale = 1)) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+En la **Figura 3** se muestran los promedios móviles centrados de orden 12 aplicados a la serie de temperatura mensual entre junio de 2022 y septiembre de 2025, desagregados por intervalos de profundidad de aproximadamente 100 metros. El suavizado permite identificar tendencias de largo plazo en la dinámica térmica, evidenciando posibles ciclos interanuales y la persistencia de gradientes térmicos verticales en el período analizado.
+
+
+```{r}
+#| echo: false
+#| fig-align: center
+#| fig-width: 10
+#| fig-height: 6
+#| fig-cap: "**Figura 3.** Promedios móviles centrados de orden 12 para el área de estudio por mes y categoría de profundidad"
+
+tbl_catp %>%
+  ggplot(aes(x=Time, y=sst_mm, color=Cat_Depth)) +
+  geom_point(aes(size=p_complete*100)) +
+  geom_line() +
+  labs(x = NULL, y='Media movil (orden 12) temperatura °C', color = "Categoría\nProfundidad") +
+  scale_x_date(date_labels = "%b-%Y", date_breaks = "2 month") +
+  scale_size_continuous(name = "Porcentaje completitud", labels = scales::label_percent(scale = 1)) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Gráfica espacial datos importados desde la librería **`raster`**
+
+La **Figura 4** compara la temperatura en los meses de agosto y diciembre de los años 2022 y 2024 para dos categorías de profundidad. Los resultados revelan diferencias térmicas estacionales marcadas, con temperaturas superficiales más elevadas en diciembre, asociadas al mayor calentamiento estival, y valores menores en agosto, correspondientes al invierno austral. Asimismo, se aprecia una atenuación de las variaciones térmicas con la profundidad, reflejando una mayor estabilidad de las masas de agua profundas.
+
+```{r}
+#| echo: false
+#| fig-align: center
+#| fig-width: 10
+#| fig-height: 6
+#| fig-cap: "**Figura 4.** Gráficos de la temperatura para las profundidades entre los 0-100 metros y los 100-200 metros para los meses de agosto y diciembre de los años 2022 y 2024."
+
+world <- map_data("world")
+
+tbl_catp <- sst_tmdp$dt.td %>%
+  mutate(Cat_Depth = cut_interval(Depth, 5)) %>%
+  group_by(Time, Cat_Depth, x, y) %>%
+  reframe(
+    n = n(),
+    n_miss = sum(is.na(sst)),
+    p_complete = 1-(n_miss/n),
+    sst=mean(sst, na.rm = TRUE))
+
+xlim <- c(min(tbl_catp$x) - 0.001, max(tbl_catp$x) + 0.001)
+ylim <- c(min(tbl_catp$y) - 0.001, max(tbl_catp$y) + 0.001)
+
+tbl_catp %>%
+  filter(Cat_Depth %in% c('[0.494,109]', '(109,217]'),
+         Time %in% as.Date(c('2024-12-01','2024-08-01','2022-12-01', '2022-08-01'))) %>%
+  ggplot(aes(x = x, y = y, fill = sst)) +
+  geom_tile() +
+  geom_polygon(data = world, aes(x = long, y = lat, group = group),
+               fill = "gray90", color = "gray70", inherit.aes = FALSE) +
+  scale_fill_gradient(low = "blue", high = "darkred") +
+  coord_sf(xlim = xlim, ylim = ylim, expand = FALSE) +
+  facet_grid(Cat_Depth ~ Time) +
+  labs(x = "Longitud", y = "Latitud", fill = "Temperatura °C") +
+  theme_minimal()
+
+```
